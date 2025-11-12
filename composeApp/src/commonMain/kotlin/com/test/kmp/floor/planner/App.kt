@@ -355,7 +355,6 @@ fun ShapeEditorScreen() {
             ) {
                 Text(text = "Drawing Square")
             }
-
             Button(
                 onClick = { isSelectLIneMode = !isSelectLIneMode },
                 colors = ButtonDefaults.buttonColors(
