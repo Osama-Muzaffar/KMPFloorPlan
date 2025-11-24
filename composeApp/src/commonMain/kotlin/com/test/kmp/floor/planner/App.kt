@@ -43,6 +43,7 @@ import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -279,7 +280,6 @@ fun generateShades(baseColor: Color): List<Color> {
         baseColor.copy(alpha = 0.2f * i)
     }
 }
-
 
 
 data class Shape(
@@ -625,6 +625,7 @@ fun ShapeEditorScreen() {
     var isDrawMode by remember { mutableStateOf(false) }
     var isDrawSquareMode by remember { mutableStateOf(false) }
     var isSelectLIneMode by remember { mutableStateOf(false) }
+    var isSeparateLineMode by remember { mutableStateOf(false) }
     var showLineEditSheet by remember { mutableStateOf(false) }
 
     // currently selected line and shape
@@ -645,6 +646,7 @@ fun ShapeEditorScreen() {
             isDrawMode = isDrawMode,
             isDrawSquareMode = isDrawSquareMode,
             isSelectLineMode = isSelectLIneMode,
+            isSeparateLineMode = isSeparateLineMode,
             shapes = shapes,
             onShapeCompleted = {
                 isDrawMode = false
@@ -690,6 +692,15 @@ fun ShapeEditorScreen() {
                 )
             ) {
                 Text(text = "Select Line")
+            }
+
+            Button(
+                onClick = { isSeparateLineMode = !isSeparateLineMode },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isSeparateLineMode) Color.Green else Color.Gray
+                )
+            ) {
+                Text(text = "Separate Line")
             }
         }
     }
@@ -815,6 +826,7 @@ fun EditableShapeCanvas(
     isDrawMode: Boolean,
     isDrawSquareMode: Boolean,
     isSelectLineMode: Boolean,
+    isSeparateLineMode: Boolean,
     shapes: SnapshotStateList<Shape>,
     onShapeCompleted: () -> Unit,
     onLineSelected: (Shape, Int) -> Unit
@@ -822,6 +834,7 @@ fun EditableShapeCanvas(
     val currentDrawMode = rememberUpdatedState(isDrawMode)
     val currentDrawSquareMode = rememberUpdatedState(isDrawSquareMode)
     val currentSelectLineMode = rememberUpdatedState(isSelectLineMode)
+    val currentSeparateLineMode = rememberUpdatedState(isSeparateLineMode)
 
     var currentShape by remember { mutableStateOf<Shape?>(null) }
     var dragEnd by remember { mutableStateOf<Offset?>(null) }
@@ -864,14 +877,55 @@ fun EditableShapeCanvas(
         invalidateKey++
     }
 
-    Canvas(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.White)
-            .pointerInput(isDrawMode) {
-                if (!isDrawMode) {
+    /*    Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.White)
+                .pointerInput(isDrawMode, isSelectLineMode) {
                     detectTapGestures(
                         onTap = { offset ->
+
+                            // -----------------------------
+                            // -----------------------------
+    // 1. DRAW MODE → Tap = add first point or next points
+    // -----------------------------
+                            if (currentDrawMode.value) {
+
+                                // First point OR new shape
+                                if (currentShape == null || currentShape?.isClosed == true) {
+                                    currentShape = Shape(mutableListOf(offset))
+                                    shapes.add(currentShape!!)
+                                    invalidateKey++
+                                    return@detectTapGestures
+                                }
+
+                                currentShape?.let { shape ->
+
+                                    // Check if tap is near starting point → close shape
+                                    val first = shape.points.first()
+                                    if (shape.points.size > 2 &&
+                                        hypot(offset.x - first.x, offset.y - first.y) < 50f
+                                    ) {
+                                        shape.isClosed = true
+                                        currentShape = null
+                                        onShapeCompleted()
+                                        invalidateKey++
+                                        return@detectTapGestures
+                                    }
+
+                                    // Add new vertex — THIS WAS MISSING
+                                    shape.points.add(offset)
+                                    shape.lineColors.add(Color.Black)
+                                    shape.lineWidths.add(5f)
+                                    invalidateKey++
+                                }
+
+                                return@detectTapGestures
+                            }
+
+                            // -----------------------------
+                            // 2. LINE SELECT MODE (original)
+                            // -----------------------------
                             if (currentSelectLineMode.value) {
                                 var lineSelected = false
 
@@ -883,18 +937,12 @@ fun EditableShapeCanvas(
                                             val start = shape.points[i]
                                             val end = shape.points[(i + 1) % shape.points.size]
 
-                                            if (isPointNearLine(
-                                                    offset,
-                                                    start,
-                                                    end,
-                                                    threshold = 30f
-                                                )
-                                            ) {
+                                            if (isPointNearLine(offset, start, end, 30f)) {
                                                 shape.selectedLineIndex = i
                                                 lineSelected = true
                                                 shape.isSelected = true
                                                 invalidateKey++
-                                                onLineSelected.invoke(shape, i)
+                                                onLineSelected(shape, i)
                                                 break
                                             }
                                         }
@@ -909,43 +957,642 @@ fun EditableShapeCanvas(
                                     }
                                     invalidateKey++
                                 }
-                                return@detectTapGestures
-                            } else {
-                                // Your existing tap handling code for shape selection
-                                val shapeSelectedIndex = shapes.indexOfFirst { it.isSelected }
 
-                                if (shapeSelectedIndex >= 0) {
-                                    val shape = shapes[shapeSelectedIndex]
-                                    val pointIndex = shape.points.indexOfFirst {
-                                        hypot(it.x - offset.x, it.y - offset.y) < 30f
-                                    }
-                                    if (pointIndex < 0) {
-                                        val newSelectedShapeIndex = shapes.indexOfFirst {
-                                            it.isClosed && isPointInsidePolygon(offset, it.points)
-                                        }
-                                        if (newSelectedShapeIndex >= 0) {
-                                            shapes.forEach { it.isSelected = false }
-                                            shapes[newSelectedShapeIndex].isSelected = true
-                                            invalidateKey++
-                                        } else {
-                                            shapes.forEach { it.isSelected = false }
-                                            invalidateKey++
-                                        }
-                                    }
-                                } else {
-                                    val selectedShapeIndex = shapes.indexOfFirst {
+                                return@detectTapGestures
+                            }
+
+                            // -----------------------------
+                            // 3. SHAPE / POINT SELECTION MODE (original)
+                            // -----------------------------
+                            val shapeSelectedIndex = shapes.indexOfFirst { it.isSelected }
+
+                            if (shapeSelectedIndex >= 0) {
+                                val shape = shapes[shapeSelectedIndex]
+                                val pointIndex = shape.points.indexOfFirst {
+                                    hypot(it.x - offset.x, it.y - offset.y) < 30f
+                                }
+                                if (pointIndex < 0) {
+                                    val newSelectedShapeIndex = shapes.indexOfFirst {
                                         it.isClosed && isPointInsidePolygon(offset, it.points)
                                     }
-                                    if (selectedShapeIndex >= 0) {
+                                    if (newSelectedShapeIndex >= 0) {
                                         shapes.forEach { it.isSelected = false }
-                                        shapes[selectedShapeIndex].isSelected = true
+                                        shapes[newSelectedShapeIndex].isSelected = true
+                                        invalidateKey++
+                                    } else {
+                                        shapes.forEach { it.isSelected = false }
                                         invalidateKey++
                                     }
+                                }
+                            } else {
+                                val selectedShapeIndex = shapes.indexOfFirst {
+                                    it.isClosed && isPointInsidePolygon(offset, it.points)
+                                }
+                                if (selectedShapeIndex >= 0) {
+                                    shapes.forEach { it.isSelected = false }
+                                    shapes[selectedShapeIndex].isSelected = true
+                                    invalidateKey++
                                 }
                             }
                         }
                     )
                 }
+                .pointerInput(isDrawMode) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            isDragModeAtStart = currentDrawMode.value
+                            if (isDragModeAtStart) {
+                                if (currentShape == null || currentShape?.isClosed == true) {
+                                    currentShape = Shape(mutableListOf(offset))
+                                    shapes.add(currentShape!!)
+                                }
+                                dragEnd = offset
+                            } else {
+                                val shapeSelectedIndex = shapes.indexOfFirst { it.isSelected }
+                                if (shapeSelectedIndex >= 0) {
+                                    val shape = shapes[shapeSelectedIndex]
+                                    val pointIndex = shape.points.indexOfFirst {
+                                        hypot(it.x - offset.x, it.y - offset.y) < 30f
+                                    }
+                                    if (pointIndex >= 0) {
+                                        draggingPointIndex = shapeSelectedIndex to pointIndex
+                                    }
+                                }
+                            }
+                        },
+                        onDrag = { change, _ ->
+                            if (isDragModeAtStart) {
+                                dragEnd = change.position
+                            } else {
+                                draggingPointIndex?.let { (shapeIndex, pointIndex) ->
+                                    shapes[shapeIndex].points[pointIndex] = change.position
+                                    invalidateKey++
+                                }
+                            }
+                        },
+                        onDragEnd = {
+                            if (isDragModeAtStart) {
+                                currentShape?.let { shape ->
+                                    val end = dragEnd
+                                    if (end != null) {
+                                        if (shape.points.isNotEmpty() &&
+                                            hypot(
+                                                end.x - shape.points.first().x,
+                                                end.y - shape.points.first().y
+                                            ) < 50f
+                                        ) {
+                                            shape.isClosed = true
+                                            currentShape = null
+                                            onShapeCompleted()
+                                            invalidateKey++
+                                        } else {
+                                            shape.points.add(end)
+                                            shape.lineColors.add(Color.Black)
+                                            shape.lineWidths.add(5f)
+                                            invalidateKey++
+                                        }
+                                    }
+                                }
+                                dragEnd = null
+                            } else {
+                                draggingPointIndex = null
+                            }
+                        }
+                    )
+                }
+        )
+        {
+            val _validate = invalidateKey
+
+            shapes.forEach { shape ->
+                if (shape.points.size > 1) {
+                    for (i in 0 until shape.points.size - 1) {
+                        val isSelectedLine = shape.selectedLineIndex == i
+                        drawLine(
+                            color = if (isSelectedLine) Color.Red else shape.lineColors.getOrElse(i) { Color.Black },
+                            start = shape.points[i],
+                            end = shape.points[i + 1],
+                            strokeWidth = if (isSelectedLine) shape.lineWidths.getOrElse(i) { 5f } + 3f
+                            else shape.lineWidths.getOrElse(i) { 5f }
+                        )
+                    }
+
+                    if (shape.isClosed) {
+                        val lastIndex = shape.points.size - 1
+                        val isSelectedLine = shape.selectedLineIndex == lastIndex
+                        drawLine(
+                            color = if (isSelectedLine) Color.Red else shape.lineColors.getOrElse(
+                                lastIndex
+                            ) { Color.Black },
+                            start = shape.points.last(),
+                            end = shape.points.first(),
+                            strokeWidth = if (isSelectedLine) shape.lineWidths.getOrElse(lastIndex) { 5f } + 3f
+                            else shape.lineWidths.getOrElse(lastIndex) { 5f }
+                        )
+                    }
+                }
+
+                if (shape.isSelected && shape.isClosed && !currentDrawMode.value) {
+                    shape.points.forEach { point ->
+                        drawRoundRect(
+                            color = Color.Blue,
+                            topLeft = Offset(point.x - 15f, point.y - 15f),
+                            size = Size(30f, 30f),
+                            cornerRadius = CornerRadius(8f, 8f),
+                            style = Fill
+                        )
+                        drawRoundRect(
+                            color = Color.White,
+                            topLeft = Offset(point.x - 15f, point.y - 15f),
+                            size = Size(30f, 30f),
+                            cornerRadius = CornerRadius(8f, 8f),
+                            style = Stroke(width = 2f)
+                        )
+                    }
+                }
+            }
+
+            currentShape?.let { shape ->
+                if (currentDrawMode.value && !shape.isClosed && dragEnd != null && shape.points.isNotEmpty()) {
+                    drawLine(
+                        color = Color.Red,
+                        start = shape.points.last(),
+                        end = dragEnd!!,
+                        strokeWidth = 3f
+                    )
+                }
+                if (currentDrawMode.value && !shape.isClosed && shape.points.isNotEmpty()) {
+                    drawCircle(
+                        color = Color.Green,
+                        radius = 10f,
+                        center = shape.points.first()
+                    )
+                }
+            }
+        }*/
+
+    /*    Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.White)
+                .pointerInput(isDrawMode, isSelectLineMode, isSeparateLineMode) {
+                    detectTapGestures(
+                        onTap = { offset ->
+
+                            // -----------------------------
+                            // 1. SEPARATE LINE MODE → Add point on existing line
+                            // -----------------------------
+                            if (currentSeparateLineMode.value) {
+                                var pointAdded = false
+
+                                shapes.forEach { shape ->
+                                    if (shape.points.size > 1) {
+                                        for (i in 0 until shape.points.size) {
+                                            val start = shape.points[i]
+                                            val end = if (shape.isClosed) {
+                                                shape.points[(i + 1) % shape.points.size]
+                                            } else {
+                                                if (i < shape.points.size - 1) shape.points[i + 1] else return@forEach
+                                            }
+
+                                            // Check if tap is near this line segment
+                                            if (isPointNearLine(offset, start, end, 30f)) {
+                                                // Insert the new point at position i+1
+                                                shape.points.add(i + 1, offset)
+
+                                                // Also add corresponding line properties
+                                                val currentColor = shape.lineColors.getOrElse(i) { Color.Black }
+                                                val currentWidth = shape.lineWidths.getOrElse(i) { 5f }
+
+                                                shape.lineColors.add(i + 1, currentColor)
+                                                shape.lineWidths.add(i + 1, currentWidth)
+
+                                                pointAdded = true
+                                                invalidateKey++
+                                                return@detectTapGestures
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (!pointAdded) {
+                                    // Optionally show a message that no line was found
+                                }
+
+                                return@detectTapGestures
+                            }
+
+                            // -----------------------------
+                            // 2. DRAW MODE → Tap = add first point or next points
+                            // -----------------------------
+                            if (currentDrawMode.value) {
+
+                                // First point OR new shape
+                                if (currentShape == null || currentShape?.isClosed == true) {
+                                    currentShape = Shape(mutableListOf(offset))
+                                    shapes.add(currentShape!!)
+                                    invalidateKey++
+                                    return@detectTapGestures
+                                }
+
+                                currentShape?.let { shape ->
+
+                                    // Check if tap is near starting point → close shape
+                                    val first = shape.points.first()
+                                    if (shape.points.size > 2 &&
+                                        hypot(offset.x - first.x, offset.y - first.y) < 50f
+                                    ) {
+                                        shape.isClosed = true
+                                        currentShape = null
+                                        onShapeCompleted()
+                                        invalidateKey++
+                                        return@detectTapGestures
+                                    }
+
+                                    // Add new vertex
+                                    shape.points.add(offset)
+                                    shape.lineColors.add(Color.Black)
+                                    shape.lineWidths.add(5f)
+                                    invalidateKey++
+                                }
+
+                                return@detectTapGestures
+                            }
+
+                            // -----------------------------
+                            // 3. LINE SELECT MODE
+                            // -----------------------------
+                            if (currentSelectLineMode.value) {
+                                var lineSelected = false
+
+                                shapes.forEach { shape ->
+                                    shape.selectedLineIndex = null
+
+                                    if (shape.points.size > 1) {
+                                        for (i in 0 until shape.points.size) {
+                                            val start = shape.points[i]
+                                            val end = shape.points[(i + 1) % shape.points.size]
+
+                                            if (isPointNearLine(offset, start, end, 30f)) {
+                                                shape.selectedLineIndex = i
+                                                lineSelected = true
+                                                shape.isSelected = true
+                                                invalidateKey++
+                                                onLineSelected(shape, i)
+                                                break
+                                            }
+                                        }
+                                    }
+                                    if (lineSelected) return@detectTapGestures
+                                }
+
+                                if (!lineSelected) {
+                                    shapes.forEach {
+                                        it.selectedLineIndex = null
+                                        it.isSelected = false
+                                    }
+                                    invalidateKey++
+                                }
+
+                                return@detectTapGestures
+                            }
+
+                            // -----------------------------
+                            // 4. SHAPE / POINT SELECTION MODE
+                            // -----------------------------
+                            val shapeSelectedIndex = shapes.indexOfFirst { it.isSelected }
+
+                            if (shapeSelectedIndex >= 0) {
+                                val shape = shapes[shapeSelectedIndex]
+                                val pointIndex = shape.points.indexOfFirst {
+                                    hypot(it.x - offset.x, it.y - offset.y) < 30f
+                                }
+                                if (pointIndex < 0) {
+                                    val newSelectedShapeIndex = shapes.indexOfFirst {
+                                        it.isClosed && isPointInsidePolygon(offset, it.points)
+                                    }
+                                    if (newSelectedShapeIndex >= 0) {
+                                        shapes.forEach { it.isSelected = false }
+                                        shapes[newSelectedShapeIndex].isSelected = true
+                                        invalidateKey++
+                                    } else {
+                                        shapes.forEach { it.isSelected = false }
+                                        invalidateKey++
+                                    }
+                                }
+                            } else {
+                                val selectedShapeIndex = shapes.indexOfFirst {
+                                    it.isClosed && isPointInsidePolygon(offset, it.points)
+                                }
+                                if (selectedShapeIndex >= 0) {
+                                    shapes.forEach { it.isSelected = false }
+                                    shapes[selectedShapeIndex].isSelected = true
+                                    invalidateKey++
+                                }
+                            }
+                        }
+                    )
+                }
+                .pointerInput(isDrawMode) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            isDragModeAtStart = currentDrawMode.value
+                            if (isDragModeAtStart) {
+                                if (currentShape == null || currentShape?.isClosed == true) {
+                                    currentShape = Shape(mutableListOf(offset))
+                                    shapes.add(currentShape!!)
+                                }
+                                dragEnd = offset
+                            } else {
+                                val shapeSelectedIndex = shapes.indexOfFirst { it.isSelected }
+                                if (shapeSelectedIndex >= 0) {
+                                    val shape = shapes[shapeSelectedIndex]
+                                    val pointIndex = shape.points.indexOfFirst {
+                                        hypot(it.x - offset.x, it.y - offset.y) < 30f
+                                    }
+                                    if (pointIndex >= 0) {
+                                        draggingPointIndex = shapeSelectedIndex to pointIndex
+                                    }
+                                }
+                            }
+                        },
+                        onDrag = { change, _ ->
+                            if (isDragModeAtStart) {
+                                dragEnd = change.position
+                            } else {
+                                draggingPointIndex?.let { (shapeIndex, pointIndex) ->
+                                    shapes[shapeIndex].points[pointIndex] = change.position
+                                    invalidateKey++
+                                }
+                            }
+                        },
+                        onDragEnd = {
+                            if (isDragModeAtStart) {
+                                currentShape?.let { shape ->
+                                    val end = dragEnd
+                                    if (end != null) {
+                                        if (shape.points.isNotEmpty() &&
+                                            hypot(
+                                                end.x - shape.points.first().x,
+                                                end.y - shape.points.first().y
+                                            ) < 50f
+                                        ) {
+                                            shape.isClosed = true
+                                            currentShape = null
+                                            onShapeCompleted()
+                                            invalidateKey++
+                                        } else {
+                                            shape.points.add(end)
+                                            shape.lineColors.add(Color.Black)
+                                            shape.lineWidths.add(5f)
+                                            invalidateKey++
+                                        }
+                                    }
+                                }
+                                dragEnd = null
+                            } else {
+                                draggingPointIndex = null
+                            }
+                        }
+                    )
+                }
+        )
+        {
+            val _validate = invalidateKey
+
+            shapes.forEach { shape ->
+                if (shape.points.size > 1) {
+                    for (i in 0 until shape.points.size - 1) {
+                        val isSelectedLine = shape.selectedLineIndex == i
+                        drawLine(
+                            color = if (isSelectedLine) Color.Red else shape.lineColors.getOrElse(i) { Color.Black },
+                            start = shape.points[i],
+                            end = shape.points[i + 1],
+                            strokeWidth = if (isSelectedLine) shape.lineWidths.getOrElse(i) { 5f } + 3f
+                            else shape.lineWidths.getOrElse(i) { 5f }
+                        )
+                    }
+
+                    if (shape.isClosed) {
+                        val lastIndex = shape.points.size - 1
+                        val isSelectedLine = shape.selectedLineIndex == lastIndex
+                        drawLine(
+                            color = if (isSelectedLine) Color.Red else shape.lineColors.getOrElse(
+                                lastIndex
+                            ) { Color.Black },
+                            start = shape.points.last(),
+                            end = shape.points.first(),
+                            strokeWidth = if (isSelectedLine) shape.lineWidths.getOrElse(lastIndex) { 5f } + 3f
+                            else shape.lineWidths.getOrElse(lastIndex) { 5f }
+                        )
+                    }
+                }
+
+                if (shape.isSelected && shape.isClosed && !currentDrawMode.value) {
+                    shape.points.forEach { point ->
+                        drawRoundRect(
+                            color = Color.Blue,
+                            topLeft = Offset(point.x - 15f, point.y - 15f),
+                            size = Size(30f, 30f),
+                            cornerRadius = CornerRadius(8f, 8f),
+                            style = Fill
+                        )
+                        drawRoundRect(
+                            color = Color.White,
+                            topLeft = Offset(point.x - 15f, point.y - 15f),
+                            size = Size(30f, 30f),
+                            cornerRadius = CornerRadius(8f, 8f),
+                            style = Stroke(width = 2f)
+                        )
+                    }
+                }
+            }
+
+            currentShape?.let { shape ->
+                if (currentDrawMode.value && !shape.isClosed && dragEnd != null && shape.points.isNotEmpty()) {
+                    drawLine(
+                        color = Color.Red,
+                        start = shape.points.last(),
+                        end = dragEnd!!,
+                        strokeWidth = 3f
+                    )
+                }
+                if (currentDrawMode.value && !shape.isClosed && shape.points.isNotEmpty()) {
+                    drawCircle(
+                        color = Color.Green,
+                        radius = 10f,
+                        center = shape.points.first()
+                    )
+                }
+            }
+        }*/
+
+    Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+            .pointerInput(isDrawMode, isSelectLineMode, isSeparateLineMode) {
+                detectTapGestures(
+                    onTap = { offset ->
+
+                        // -----------------------------
+                        // 1. SEPARATE LINE MODE → Add point on existing line
+                        // -----------------------------
+                        if (currentSeparateLineMode.value) {
+                            var pointAdded = false
+
+                            shapes.forEach { shape ->
+                                if (shape.points.size > 1) {
+                                    for (i in 0 until shape.points.size) {
+                                        val start = shape.points[i]
+                                        val end = if (shape.isClosed) {
+                                            shape.points[(i + 1) % shape.points.size]
+                                        } else {
+                                            if (i < shape.points.size - 1) shape.points[i + 1] else return@forEach
+                                        }
+
+                                        // Check if tap is near this line segment
+                                        if (isPointNearLine(offset, start, end, 30f)) {
+                                            // Insert the new point at position i+1
+                                            shape.points.add(i + 1, offset)
+
+                                            // Also add corresponding line properties
+                                            val currentColor =
+                                                shape.lineColors.getOrElse(i) { Color.Black }
+                                            val currentWidth = shape.lineWidths.getOrElse(i) { 5f }
+
+                                            shape.lineColors.add(i + 1, currentColor)
+                                            shape.lineWidths.add(i + 1, currentWidth)
+
+                                            // Select the shape after adding point
+                                            shapes.forEach { it.isSelected = false }
+                                            shape.isSelected = true
+
+                                            pointAdded = true
+                                            invalidateKey++
+                                            return@detectTapGestures
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!pointAdded) {
+                                // Optionally show a message that no line was found
+                            }
+
+                            return@detectTapGestures
+                        }
+
+                        // -----------------------------
+                        // 2. DRAW MODE → Tap = add first point or next points
+                        // -----------------------------
+                        if (currentDrawMode.value) {
+
+                            // First point OR new shape
+                            if (currentShape == null || currentShape?.isClosed == true) {
+                                currentShape = Shape(mutableListOf(offset))
+                                shapes.add(currentShape!!)
+                                invalidateKey++
+                                return@detectTapGestures
+                            }
+
+                            currentShape?.let { shape ->
+
+                                // Check if tap is near starting point → close shape
+                                val first = shape.points.first()
+                                if (shape.points.size > 2 &&
+                                    hypot(offset.x - first.x, offset.y - first.y) < 50f
+                                ) {
+                                    shape.isClosed = true
+                                    currentShape = null
+                                    onShapeCompleted()
+                                    invalidateKey++
+                                    return@detectTapGestures
+                                }
+
+                                // Add new vertex
+                                shape.points.add(offset)
+                                shape.lineColors.add(Color.Black)
+                                shape.lineWidths.add(5f)
+                                invalidateKey++
+                            }
+
+                            return@detectTapGestures
+                        }
+
+                        // -----------------------------
+                        // 3. LINE SELECT MODE
+                        // -----------------------------
+                        if (currentSelectLineMode.value) {
+                            var lineSelected = false
+
+                            shapes.forEach { shape ->
+                                shape.selectedLineIndex = null
+
+                                if (shape.points.size > 1) {
+                                    for (i in 0 until shape.points.size) {
+                                        val start = shape.points[i]
+                                        val end = shape.points[(i + 1) % shape.points.size]
+
+                                        if (isPointNearLine(offset, start, end, 30f)) {
+                                            shape.selectedLineIndex = i
+                                            lineSelected = true
+                                            shape.isSelected = true
+                                            invalidateKey++
+                                            onLineSelected(shape, i)
+                                            break
+                                        }
+                                    }
+                                }
+                                if (lineSelected) return@detectTapGestures
+                            }
+
+                            if (!lineSelected) {
+                                shapes.forEach {
+                                    it.selectedLineIndex = null
+                                    it.isSelected = false
+                                }
+                                invalidateKey++
+                            }
+
+                            return@detectTapGestures
+                        }
+
+                        // -----------------------------
+                        // 4. SHAPE / POINT SELECTION MODE
+                        // -----------------------------
+                        val shapeSelectedIndex = shapes.indexOfFirst { it.isSelected }
+
+                        if (shapeSelectedIndex >= 0) {
+                            val shape = shapes[shapeSelectedIndex]
+                            val pointIndex = shape.points.indexOfFirst {
+                                hypot(it.x - offset.x, it.y - offset.y) < 30f
+                            }
+                            if (pointIndex < 0) {
+                                val newSelectedShapeIndex = shapes.indexOfFirst {
+                                    it.isClosed && isPointInsidePolygon(offset, it.points)
+                                }
+                                if (newSelectedShapeIndex >= 0) {
+                                    shapes.forEach { it.isSelected = false }
+                                    shapes[newSelectedShapeIndex].isSelected = true
+                                    invalidateKey++
+                                } else {
+                                    shapes.forEach { it.isSelected = false }
+                                    invalidateKey++
+                                }
+                            }
+                        } else {
+                            val selectedShapeIndex = shapes.indexOfFirst {
+                                it.isClosed && isPointInsidePolygon(offset, it.points)
+                            }
+                            if (selectedShapeIndex >= 0) {
+                                shapes.forEach { it.isSelected = false }
+                                shapes[selectedShapeIndex].isSelected = true
+                                invalidateKey++
+                            }
+                        }
+                    }
+                )
             }
             .pointerInput(isDrawMode) {
                 detectDragGestures(
@@ -1010,7 +1657,8 @@ fun EditableShapeCanvas(
                     }
                 )
             }
-    ) {
+    )
+    {
         val _validate = invalidateKey
 
         shapes.forEach { shape ->
